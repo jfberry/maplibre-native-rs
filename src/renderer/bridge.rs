@@ -3,7 +3,9 @@ use crate::renderer::callbacks::{
     void_callback, CameraDidChangeCallback, FailingLoadingMapCallback,
     FinishRenderingFrameCallback, VoidCallback,
 };
-use crate::renderer::file_source::{fs_request_callback, FileSourceRequestCallback};
+use crate::renderer::file_source::{
+    fs_callback_is_sync, fs_invoke_async, fs_invoke_sync, FileSourceRequestCallback,
+};
 use std::fmt::Display;
 use std::ops::Sub;
 
@@ -406,7 +408,9 @@ pub mod map_observer {
     }
 }
 
-#[allow(clippy::borrow_as_ptr, unused_qualifications)]
+// `deliver` is only invoked from `fs_invoke_async`'s async-feature path; on
+// sync-only builds the rust-side stub never calls it, so dead_code fires.
+#[allow(dead_code, clippy::borrow_as_ptr, unused_qualifications)]
 #[cxx::bridge(namespace = "mln::bridge")]
 /// Rust-backed FileSource bridge. See `src/cpp/rust_file_source.{h,cpp}`
 /// for the C++ side.
@@ -426,21 +430,55 @@ pub mod file_source {
     extern "Rust" {
         type FileSourceRequestCallback;
 
-        fn fs_request_callback(
+        /// Returns true if the registered callback is the sync variant.
+        /// C++ uses this to pick the inline-dispatch fast path; async
+        /// callbacks go through the sink/spawn path instead.
+        fn fs_callback_is_sync(callback: &FileSourceRequestCallback) -> bool;
+
+        /// Sync dispatch: invoke the closure inline and return the
+        /// response. Called from C++ inside `RustFileSource::request`.
+        fn fs_invoke_sync(
             callback: &FileSourceRequestCallback,
             url: &str,
             kind: u8,
         ) -> RustFsResponse;
+
+        /// Async dispatch: spawn the closure's future on the runtime,
+        /// move `sink` into the spawned task, and let the task call
+        /// `sink.deliver(...)` when the future resolves. Returns
+        /// immediately so `RustFileSource::request` can return its
+        /// `RustAsyncRequest` cancellation handle.
+        fn fs_invoke_async(
+            callback: &FileSourceRequestCallback,
+            url: String,
+            kind: u8,
+            sink: UniquePtr<FsRequestSink>,
+        );
     }
 
     unsafe extern "C++" {
         include!("rust_file_source.h");
+
+        /// Opaque C++ holder of the per-request mbgl callback + cancel
+        /// flag. Moved into the spawned Rust task; dropped after delivery.
+        type FsRequestSink;
+
+        /// Deliver the response and invoke the underlying mbgl callback.
+        /// No-op if the request has already been cancelled by mbgl
+        /// dropping its `RustAsyncRequest` handle.
+        fn deliver(self: Pin<&mut FsRequestSink>, response: RustFsResponse);
 
         /// Install the Rust closure as the `ResourceLoader` file source
         /// factory. Process-global; replaces any previous callback.
         fn register_rust_file_source_factory(callback: Box<FileSourceRequestCallback>);
     }
 }
+
+// The sink is internally synchronized via std::mutex on the C++ side, and
+// is only ever held by one Rust owner at a time (the spawned task that owns
+// the `UniquePtr`). Marking it Send lets `UniquePtr<FsRequestSink>` cross
+// thread boundaries when moved into a tokio task.
+unsafe impl Send for file_source::FsRequestSink {}
 
 #[allow(clippy::borrow_as_ptr)]
 #[cxx::bridge(namespace = "mln::bridge")]

@@ -25,6 +25,10 @@ opengl = []
 vulkan = []
 log = ["dep:log"]
 pool = ["dep:tokio"]
+# Enables the async variant of the FileSource callback (`with_async_file_source_callback`).
+# Pulls a tokio runtime so spawned futures can progress while the render thread is busy;
+# the callback closure may use `.await` and is invoked outside the render thread.
+async-file-source = ["dep:tokio", "tokio/rt"]
 
 [dependencies]
 cxx.workspace = true

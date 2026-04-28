@@ -6,6 +6,10 @@ edition.workspace = true
 
 [dependencies]
 axum.workspace = true
+bytes = "1"
 image.workspace = true
-maplibre_native = { workspace = true, features = ["pool"] }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+maplibre_native = { workspace = true, features = ["pool", "async-file-source"] }
+moka = { version = "0.12", features = ["future"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+thiserror.workspace = true
+tokio = { workspace = true, features = ["fs", "macros", "rt-multi-thread"] }
